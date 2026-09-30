@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import type { DropPoint, Orchard } from '@/types'
 import { ACCESSIBILITIES, CROPS, suggestColonyBoxes } from '@/types'
@@ -9,6 +9,8 @@ import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { colonyStore } from '@/stores/colonyStore'
+import { useReconciledOccupancy } from '@/hooks/useReconciledOccupancy'
+import { pendingReasonText } from '@/utils/reconcile'
 import { bloomDays } from '@/utils/geo'
 import { uid } from '@/utils/id'
 
@@ -40,6 +42,7 @@ export default function OrchardsPage(): JSX.Element {
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
+  const { placements, pending } = useReconciledOccupancy()
 
   const [orchardModal, setOrchardModal] = useState(false)
   const [editingOrchard, setEditingOrchard] = useState<Orchard | null>(null)
@@ -235,7 +238,34 @@ export default function OrchardsPage(): JSX.Element {
                     title: '安排群号',
                     key: 'codes',
                     render: (_, record: DropPoint) =>
-                      record.colonyCodes.length > 0 ? record.colonyCodes.join('、') : '—'
+                      record.colonyCodes.length > 0 ? (
+                        <Space wrap size={4}>
+                          {record.colonyCodes.map((code) => {
+                            const active = placements.some(
+                              (item) => item.orchardId === record.orchardId && item.dropCode === record.code && item.colonyCode === code
+                            )
+                            const pendingItem = pending.find(
+                              (item) => item.dropPointId === record.id && item.colonyCode === code
+                            )
+                            return active ? (
+                              <Tag key={code} color="cyan">
+                                {code}
+                              </Tag>
+                            ) : (
+                              <Tooltip
+                                key={code}
+                                title={pendingItem ? `待确认：${pendingReasonText(pendingItem.reason)}` : '待确认（台账未对账）'}
+                              >
+                                <Tag color="default" style={{ borderStyle: 'dashed' }}>
+                                  {code}·待确认
+                                </Tag>
+                              </Tooltip>
+                            )
+                          })}
+                        </Space>
+                      ) : (
+                        '—'
+                      )
                   },
                   {
                     title: '操作',

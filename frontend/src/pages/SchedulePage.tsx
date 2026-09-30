@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Alert, Card, Col, Row, Segmented, Space, Table, Tag, Typography } from 'antd'
-import type { BeeColony, DropPoint, Orchard } from '@/types'
+import { Alert, Card, Col, Row, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import type { Orchard } from '@/types'
 import FlowerWindowBar from '@/components/common/FlowerWindowBar'
 import RouteMap from '@/components/common/RouteMap'
 import StatusTag from '@/components/common/StatusTag'
@@ -9,24 +9,10 @@ import { orchardStore } from '@/stores/orchardStore'
 import { colonyStore } from '@/stores/colonyStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
-import { bloomDays, flowerWindowOverlap } from '@/utils/geo'
+import { useReconciledOccupancy } from '@/hooks/useReconciledOccupancy'
+import { pendingReasonText, type PendingAssignment } from '@/utils/reconcile'
+import { bloomDays } from '@/utils/geo'
 import { suggestColonyBoxes } from '@/types'
-
-interface Placement {
-  colonyCode: string
-  orchardId: string
-  dropCode: string
-  start: string
-  end: string
-}
-
-interface ConflictItem {
-  colonyCode: string
-  a: Placement
-  b: Placement
-  days: number
-  range: string
-}
 
 interface ScheduleRow {
   key: string
@@ -35,71 +21,24 @@ interface ScheduleRow {
   suggest: number
   placedCodes: string[]
   dropCodes: string[]
+  pending: PendingAssignment[]
   conflicted: boolean
 }
 
-/** 季内授粉安排总表：日期条带展示花期与已投放群体，冲突处标红 */
+/** 季内授粉安排总表：占用按台账对账后的结果计算，冲突处标红 */
 export default function SchedulePage(): JSX.Element {
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const routes = usePersistentStore(routeStore, (state) => state.rows)
+  const { placements, pending, conflicts } = useReconciledOccupancy()
   const [scope, setScope] = useState<'all' | 'conflict'>('all')
-
-  /** 由投放点的群号安排 + 蜂群当前所在地块，汇总出「某群在某地块」的时间占用 */
-  const placements = useMemo<Placement[]>(() => {
-    const list: Placement[] = []
-    dropPoints.forEach((point: DropPoint) => {
-      point.colonyCodes.forEach((code) => {
-        list.push({
-          colonyCode: code,
-          orchardId: point.orchardId,
-          dropCode: point.code,
-          start: point.dropWindow,
-          end: point.withdrawTime
-        })
-      })
-    })
-    colonies.forEach((colony: BeeColony) => {
-      if (!colony.currentOrchardId) return
-      const orchard = orchards.find((item) => item.id === colony.currentOrchardId)
-      if (!orchard) return
-      const already = list.some((item) => item.colonyCode === colony.code && item.orchardId === colony.currentOrchardId)
-      if (already) return
-      list.push({
-        colonyCode: colony.code,
-        orchardId: colony.currentOrchardId,
-        dropCode: '（当前所在）',
-        start: orchard.bloomStart,
-        end: orchard.bloomEnd
-      })
-    })
-    return list
-  }, [dropPoints, colonies, orchards])
-
-  /** 同一蜂群同一天被排入两个地块 → 冲突列表 */
-  const conflicts = useMemo<ConflictItem[]>(() => {
-    const result: ConflictItem[] = []
-    const codes = Array.from(new Set(placements.map((item) => item.colonyCode)))
-    codes.forEach((code) => {
-      const list = placements.filter((item) => item.colonyCode === code)
-      for (let i = 0; i < list.length; i += 1) {
-        for (let j = i + 1; j < list.length; j += 1) {
-          if (list[i].orchardId === list[j].orchardId) continue
-          const overlap = flowerWindowOverlap(list[i].start, list[i].end, list[j].start, list[j].end)
-          if (overlap.overlap) {
-            result.push({ colonyCode: code, a: list[i], b: list[j], days: overlap.days, range: overlap.range })
-          }
-        }
-      }
-    })
-    return result
-  }, [placements])
 
   const rows = useMemo<ScheduleRow[]>(
     () =>
       orchards.map((orchard) => {
         const related = placements.filter((item) => item.orchardId === orchard.id)
+        const relatedPending = pending.filter((item) => item.orchardId === orchard.id)
         return {
           key: orchard.id,
           orchard,
@@ -107,10 +46,11 @@ export default function SchedulePage(): JSX.Element {
           suggest: suggestColonyBoxes(orchard),
           placedCodes: Array.from(new Set(related.map((item) => item.colonyCode))),
           dropCodes: Array.from(new Set(related.map((item) => item.dropCode))),
+          pending: relatedPending,
           conflicted: conflicts.some((item) => item.a.orchardId === orchard.id || item.b.orchardId === orchard.id)
         }
       }),
-    [orchards, placements, conflicts]
+    [orchards, placements, pending, conflicts]
   )
 
   const visibleRows = scope === 'conflict' ? rows.filter((row) => row.conflicted) : rows
@@ -126,7 +66,8 @@ export default function SchedulePage(): JSX.Element {
         <div>
           <h2 className="page-title">季内授粉安排总表</h2>
           <p className="page-sub">
-            按日期条带展示各地块盛花期与已投放群体；同一蜂群在同一天被排入花期重叠的两个地块时进入冲突列表并标红。
+            占用按蜂群台账对账后的结果计算：每个群同一时间只落一块地，转场中的只认新地块（出发地花期无人覆盖）；
+            被顶掉的投放点计划退回「待确认」，不计入占用与冲突。
           </p>
         </div>
         <Segmented
@@ -176,6 +117,13 @@ export default function SchedulePage(): JSX.Element {
                   ) : (
                     <Tag>尚未安排群体</Tag>
                   )}
+                  {row.pending.map((item) => (
+                    <Tooltip key={item.dropPointId} title={`${item.dropCode}：${pendingReasonText(item.reason)}`}>
+                      <Tag color="default" style={{ borderStyle: 'dashed' }}>
+                        待确认 {item.colonyCode}
+                      </Tag>
+                    </Tooltip>
+                  ))}
                   {row.conflicted ? <Tag color="red">存在冲突</Tag> : null}
                 </Space>
               </div>
@@ -217,9 +165,27 @@ export default function SchedulePage(): JSX.Element {
               key: 'colonies',
               render: (_, record: ScheduleRow) => (
                 <Space wrap size={4}>
-                  {record.placedCodes.length > 0 ? record.placedCodes.map((code) => <Tag key={code}>{code}</Tag>) : <span>—</span>}
+                  {record.placedCodes.length > 0 ? record.placedCodes.map((code) => <Tag key={code} color="cyan">{code}</Tag>) : <span>—</span>}
                 </Space>
               )
+            },
+            {
+              title: '待确认安排',
+              key: 'pending',
+              render: (_, record: ScheduleRow) =>
+                record.pending.length > 0 ? (
+                  <Space wrap size={4}>
+                    {record.pending.map((item) => (
+                      <Tooltip key={item.dropPointId} title={`${item.dropCode}：${pendingReasonText(item.reason)}`}>
+                        <Tag color="default" style={{ borderStyle: 'dashed' }}>
+                          {item.colonyCode}
+                        </Tag>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                ) : (
+                  <span>—</span>
+                )
             },
             {
               title: '状态',

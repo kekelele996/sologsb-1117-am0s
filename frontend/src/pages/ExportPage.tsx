@@ -10,6 +10,8 @@ import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
 import { downloadCsv, downloadJson } from '@/utils/export'
 import { bloomDays } from '@/utils/geo'
+import { useReconciledOccupancy } from '@/hooks/useReconciledOccupancy'
+import { pendingReasonText } from '@/utils/reconcile'
 
 interface ScheduleExportRow {
   orchard: string
@@ -20,6 +22,7 @@ interface ScheduleExportRow {
   suggestBoxes: number
   dropCode: string
   colonyCode: string
+  status: string
   dropWindow: string
   withdrawTime: string
   owner: string
@@ -31,13 +34,18 @@ export default function ExportPage(): JSX.Element {
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const routes = usePersistentStore(routeStore, (state) => state.rows)
+  const { placements, pending } = useReconciledOccupancy()
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape')
 
   const orchardName = (id: string): string => orchards.find((item) => item.id === id)?.name ?? '未知地块'
 
-  /** 授粉安排清单：地块 × 投放点 × 群号 */
+  /** 授粉安排清单：地块 × 投放点 × 群号，状态按台账对账结果标注（已投放 / 待确认） */
   const scheduleRows = useMemo<ScheduleExportRow[]>(() => {
     const rows: ScheduleExportRow[] = []
+    const activeKeys = new Set(placements.map((item) => `${item.orchardId}|${item.dropCode}|${item.colonyCode}`))
+    const pendingMap = new Map(
+      pending.map((item) => [`${item.orchardId}|${item.dropCode}|${item.colonyCode}`, item.reason])
+    )
     orchards.forEach((orchard: Orchard) => {
       const points = dropPoints.filter((item) => item.orchardId === orchard.id)
       const base = {
@@ -49,7 +57,7 @@ export default function ExportPage(): JSX.Element {
         suggestBoxes: suggestColonyBoxes(orchard)
       }
       if (points.length === 0) {
-        rows.push({ ...base, dropCode: '—', colonyCode: '—', dropWindow: '—', withdrawTime: '—', owner: '—' })
+        rows.push({ ...base, dropCode: '—', colonyCode: '—', status: '—', dropWindow: '—', withdrawTime: '—', owner: '—' })
         return
       }
       points.forEach((point: DropPoint) => {
@@ -58,6 +66,7 @@ export default function ExportPage(): JSX.Element {
             ...base,
             dropCode: point.code,
             colonyCode: '待分配',
+            status: '待分配',
             dropWindow: point.dropWindow,
             withdrawTime: point.withdrawTime,
             owner: point.owner || '—'
@@ -65,10 +74,14 @@ export default function ExportPage(): JSX.Element {
           return
         }
         point.colonyCodes.forEach((code) => {
+          const key = `${orchard.id}|${point.code}|${code}`
+          const isActive = activeKeys.has(key)
+          const reason = pendingMap.get(key)
           rows.push({
             ...base,
             dropCode: point.code,
             colonyCode: code,
+            status: isActive ? '已投放' : reason ? `待确认（${pendingReasonText(reason)}）` : '待确认',
             dropWindow: point.dropWindow,
             withdrawTime: point.withdrawTime,
             owner: point.owner || '—'
@@ -77,7 +90,7 @@ export default function ExportPage(): JSX.Element {
       })
     })
     return rows
-  }, [orchards, dropPoints])
+  }, [orchards, dropPoints, placements, pending])
 
   const routeRows = useMemo(
     () =>
@@ -109,6 +122,7 @@ export default function ExportPage(): JSX.Element {
       { key: 'suggestBoxes', label: '建议箱数' },
       { key: 'dropCode', label: '投放点' },
       { key: 'colonyCode', label: '群号' },
+      { key: 'status', label: '状态' },
       { key: 'dropWindow', label: '投放时间窗' },
       { key: 'withdrawTime', label: '撤场时间' },
       { key: 'owner', label: '责任人' }
@@ -193,6 +207,7 @@ export default function ExportPage(): JSX.Element {
               { title: '建议箱数', dataIndex: 'suggestBoxes', key: 'suggest', width: 90 },
               { title: '投放点', dataIndex: 'dropCode', key: 'drop', width: 90 },
               { title: '群号', dataIndex: 'colonyCode', key: 'colony', width: 90 },
+              { title: '状态', dataIndex: 'status', key: 'status', width: 200 },
               { title: '投放时间窗', dataIndex: 'dropWindow', key: 'window' },
               { title: '撤场时间', dataIndex: 'withdrawTime', key: 'withdraw' },
               { title: '责任人', dataIndex: 'owner', key: 'owner' }
@@ -224,14 +239,23 @@ export default function ExportPage(): JSX.Element {
           <Card size="small" title="蜂群投放一览（按群号）">
             <Space direction="vertical">
               {colonies.map((colony: BeeColony) => {
-                const points = dropPoints.filter((item) => item.colonyCodes.includes(colony.code))
+                const activeDrops = placements.filter((item) => item.colonyCode === colony.code && item.source === 'drop')
+                const pendingDrops = pending.filter((item) => item.colonyCode === colony.code)
                 return (
                   <Typography.Text key={colony.id}>
                     <Tag color="cyan">{colony.code}</Tag>
                     {colony.species} · {colony.strengthFrames} 足框 ·{' '}
-                    {points.length > 0
-                      ? points.map((item) => `${item.code}@${orchardName(item.orchardId)}`).join('、')
-                      : '尚未安排投放点'}
+                    {activeDrops.length > 0 ? (
+                      <span>已投放 {activeDrops.map((item) => `${item.dropCode}@${orchardName(item.orchardId)}`).join('、')}</span>
+                    ) : (
+                      '尚未落场'
+                    )}
+                    {pendingDrops.length > 0 ? (
+                      <span style={{ color: '#999' }}>
+                        {' '}
+                        · 待确认 {pendingDrops.map((item) => `${item.dropCode}（${pendingReasonText(item.reason)}）`).join('、')}
+                      </span>
+                    ) : null}
                   </Typography.Text>
                 )
               })}
