@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import type { DropPoint, Orchard } from '@/types'
 import { ACCESSIBILITIES, CROPS, suggestColonyBoxes } from '@/types'
@@ -9,6 +9,8 @@ import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { colonyStore } from '@/stores/colonyStore'
+import { routeStore } from '@/stores/routeStore'
+import { reconcileSchedule } from '@/utils/reconcile'
 import { bloomDays } from '@/utils/geo'
 import { uid } from '@/utils/id'
 
@@ -40,6 +42,18 @@ export default function OrchardsPage(): JSX.Element {
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
+  const routes = usePersistentStore(routeStore, (state) => state.rows)
+
+  /** 台账对账：投放点群号与蜂群实际所在地不符的，标为待确认（不计占用） */
+  const reconciled = useMemo(
+    () => reconcileSchedule(orchards, colonies, dropPoints, routes),
+    [orchards, colonies, dropPoints, routes]
+  )
+  const pendingReasonByKey = useMemo(() => {
+    const map = new Map<string, string>()
+    reconciled.pending.forEach((plan) => map.set(`${plan.dropPointId}::${plan.colonyCode}`, plan.reason))
+    return map
+  }, [reconciled])
 
   const [orchardModal, setOrchardModal] = useState(false)
   const [editingOrchard, setEditingOrchard] = useState<Orchard | null>(null)
@@ -235,7 +249,26 @@ export default function OrchardsPage(): JSX.Element {
                     title: '安排群号',
                     key: 'codes',
                     render: (_, record: DropPoint) =>
-                      record.colonyCodes.length > 0 ? record.colonyCodes.join('、') : '—'
+                      record.colonyCodes.length > 0 ? (
+                        <Space wrap size={4}>
+                          {record.colonyCodes.map((code) => {
+                            const reason = pendingReasonByKey.get(`${record.id}::${code}`)
+                            return reason ? (
+                              <Tooltip key={code} title={reason}>
+                                <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                                  {code} 待确认
+                                </Tag>
+                              </Tooltip>
+                            ) : (
+                              <Tag key={code} color="green" style={{ marginInlineEnd: 0 }}>
+                                {code}
+                              </Tag>
+                            )
+                          })}
+                        </Space>
+                      ) : (
+                        '—'
+                      )
                   },
                   {
                     title: '操作',
@@ -356,7 +389,11 @@ export default function OrchardsPage(): JSX.Element {
               </Form.Item>
             </Col>
             <Col span={24}>
-              <Form.Item name="colonyCodes" label="安排群号（同一群跨地块重叠即冲突）">
+              <Form.Item
+                name="colonyCodes"
+                label="安排群号"
+                extra="占用以蜂群台账为准：与台账实际所在地不符（含转场已撤走）的安排会退回待确认，不计占用、不报冲突。"
+              >
                 <Select mode="multiple" options={colonies.map((item) => ({ value: item.code, label: `${item.code}（${item.species} ${item.strengthFrames} 足框）` }))} />
               </Form.Item>
             </Col>

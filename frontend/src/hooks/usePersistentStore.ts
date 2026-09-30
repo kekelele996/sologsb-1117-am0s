@@ -158,10 +158,10 @@ export async function seedDemoData(): Promise<void> {
       species: '意蜂',
       strengthFrames: 6,
       boxType: '标准继箱',
-      currentOrchardId: 'orc_rape',
-      status: '转场中',
-      lastCheckDate: `${year}-04-05`,
-      healthNote: '轻微螨害，转场后需治螨'
+      currentOrchardId: 'orc_cherry',
+      status: '在园',
+      lastCheckDate: `${year}-04-12`,
+      healthNote: '轻微螨害，转场后需治螨；已从东滩油菜田转至西沟樱桃坡'
     },
     {
       id: 'col_003',
